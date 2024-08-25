@@ -38,10 +38,6 @@
 Const PROGNAME = "check_open_ports"
 Const VERSION = "0.1.0"
 
-Dim verbose
-verbose = 0
-
-
 ' Default settings for script.
 Dim ports, proto, command, retCode, retVal
 Dim objShell, objScriptExec
