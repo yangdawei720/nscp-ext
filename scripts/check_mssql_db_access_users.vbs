@@ -54,7 +54,7 @@ np.add_arg "databases", "db1,db2[,...]", 0
 
 retCode = OK
 ' If we have no args or arglist contains /help or not all of the required arguments are fulfilled show the usage output,.
-If Args.Count < 4 Or Args.Exists("help") Or np.parse_args = 0 Then
+If Args.Count < 3 Or Args.Exists("help") Or np.parse_args = 0 Then
 	WScript.Echo Args.Count
 	np.Usage
 End If
@@ -75,7 +75,7 @@ objConn.Open execStr
 If Err.Number <> 0 Then
     retVal = "Connection failed: " & Err.Description
     retCode = UNKNOWN
-    GoTo RETRIEVE_AND_EXIT
+    Call cleanExit()
 End If
 
 ' 如果不给出指定的数据库名称，则默认对所有数据库的用户访问情况进行统计
@@ -83,7 +83,7 @@ If IsEmpty(databases) Then
     ' 定义SQL查询语句，获取所有数据库名称
     execStr = "SELECT name FROM sys.databases ORDER BY name"
     ' 执行SQL查询
-    Set objRs = conn.Execute(execStr)
+    Set objRs = objConn.Execute(execStr)
     ' 检查SQL执行是否成功
     If Err.Number <> 0 Then
         retCode = UNKNOWN
@@ -102,44 +102,47 @@ If IsEmpty(databases) Then
     Set objRs = Nothing
 
     If retCode = UNKNOWN Then
-        GoTo RETRIEVE_AND_EXIT
+        Call cleanExit()
     End If
 End If
 
 databases = Split(databases, ",") ' 使用逗号作为分隔符
 Dim database, perfdata, errMsg
-For database = LBound(databases) To UBound(databases)
+For i = 0 To UBound(databases)
+	database = databases(i)
 	execStr = "SELECT COUNT(*) AS UserCount FROM sys.sysprocesses WHERE dbid = DB_ID('" & database & "') AND spid > 50"
-    Set objRs = conn.Execute(execStr)
+    Set objRs = objConn.Execute(execStr)
     
     If Err.Number <> 0 Then
         retCode = CRITICAL
-        If IsEmpty(errMsg) Then
-            errMsg = database 
-        Else
-            errMsg = errMsg & "," & database
-        End If
+        errMsg = Err.Description
+
+		objRs.Close
+		Set objRs = Nothing
+		Exit For
     Else
         If IsEmpty(perfdata) Then
             perfdata = "'" & database & "'=" & objRs.Fields("UserCount").Value
         Else
-            perfdata = perfdata & "'" & database & "'=" & objRs.Fields("UserCount").Value
+            perfdata = perfdata & " '" & database & "'=" & objRs.Fields("UserCount").Value
         End If
+		
+	    objRs.Close
+		Set objRs = Nothing
     End If
-
-    objRs.Close
-    Set objRs = Nothing
 Next
 
 If retCode = OK Then
-    retVal = "All is fine!"
+    retVal = "All is fine! | " & perfdata 
 Else
     retVal = "Failed DB: " & errMsg
 End If
 
-' 清理资源
-RETRIEVE_AND_EXIT:
-objConn.Close
-Set objConn = Nothing
+call cleanExit()
 
-np.nagios_exit retVal, retCode
+' 清理资源
+Sub cleanExit()
+    objConn.Close
+    Set objConn = Nothing
+    np.nagios_exit retVal, retCode
+End Sub
