@@ -34,13 +34,12 @@
 ' databases(必选): 网络协议，包括 TCP 或 UDP。若空缺，默认两个协议的端口都包含
 
 ' 全局变量
-Const PROGNAME = "check_mssql_db_access_users"
-Const VERSION = "0.1.0"
+Const PROGNAME = "check_mssql_user_connecting_db_count"
+Const VERSION = "0.1.1"
 
 ' Default settings for script.
 Dim databases, serverName, username, password
-Dim retCode, retVal
-Dim objConn, execStr, objRs
+Dim objConn, execStr, objRs, retVal
 
 ' 解析参数
 ' Create the NagiosPlugin object
@@ -69,13 +68,19 @@ If Args.Exists("password") Then password = Args("password")
 Set objConn = CreateObject("ADODB.Connection")
 ' 构建连接字符串
 execStr = "Provider=SQLOLEDB;Data Source=" & serverName & ";Initial Catalog=master;User ID=" & username & ";Password=" & password & ";"
+' 启用错误处理
+On Error Resume Next
 ' 打开连接
 objConn.Open execStr
 ' 检查连接是否成功
 If Err.Number <> 0 Then
-    retVal = "Connection failed: " & Err.Description
-    retCode = UNKNOWN
-    Call cleanExit()
+	retVal = Err.Description
+	
+	objConn.Close
+	Set objConn = Nothing
+	
+	On Error GoTo 0
+	np.nagios_exit retVal, CRITICAL
 End If
 
 ' 如果不给出指定的数据库名称，则默认对所有数据库的用户访问情况进行统计
@@ -86,8 +91,15 @@ If IsEmpty(databases) Then
     Set objRs = objConn.Execute(execStr)
     ' 检查SQL执行是否成功
     If Err.Number <> 0 Then
-        retCode = UNKNOWN
-        retVal = "Execution failed(code: " & Err.Number & "): " & Err.Description
+		retVal = Err.Description
+			
+		objConn.Close
+		Set objConn = Nothing
+		objRs.Close
+		Set objRs = Nothing
+			
+		On Error GoTo 0
+		np.nagios_exit retVal, CRITICAL
     Else
         ' 遍历结果集并输出每个数据库名称
         databases = objRs.Fields("name").Value
@@ -96,53 +108,39 @@ If IsEmpty(databases) Then
             databases = databases & "," & objRs.Fields("name").Value
             objRs.MoveNext
         Loop
-    End If
-
-    objRs.Close
-    Set objRs = Nothing
-
-    If retCode = UNKNOWN Then
-        Call cleanExit()
+		
+		objRs.Close
+		Set objRs = Nothing
     End If
 End If
 
 databases = Split(databases, ",") ' 使用逗号作为分隔符
-Dim database, perfdata, errMsg
+Dim database, perfdata, ucdbc
+ucdbc = 0
 For i = 0 To UBound(databases)
 	database = databases(i)
 	execStr = "SELECT COUNT(*) AS UserCount FROM sys.sysprocesses WHERE dbid = DB_ID('" & database & "') AND spid > 50"
     Set objRs = objConn.Execute(execStr)
     
-    If Err.Number <> 0 Then
-        retCode = CRITICAL
-        errMsg = Err.Description
-
-		objRs.Close
-		Set objRs = Nothing
-		Exit For
+	If objRs.Fields("UserCount").Value > 0 Then
+		ucdbc = ucdbc + 1
+	End If
+	
+    If IsEmpty(perfdata) Then
+        perfdata = " '" & database & "'=" & objRs.Fields("UserCount").Value
     Else
-        If IsEmpty(perfdata) Then
-            perfdata = "'" & database & "'=" & objRs.Fields("UserCount").Value
-        Else
-            perfdata = perfdata & " '" & database & "'=" & objRs.Fields("UserCount").Value
-        End If
-		
-	    objRs.Close
-		Set objRs = Nothing
+        perfdata = perfdata & " '" & database & "'=" & objRs.Fields("UserCount").Value
     End If
+		
+    objRs.Close
+	Set objRs = Nothing
 Next
 
-If retCode = OK Then
-    retVal = "All is fine! | " & perfdata 
-Else
-    retVal = "Failed DB: " & errMsg
-End If
-
-call cleanExit()
-
 ' 清理资源
-Sub cleanExit()
-    objConn.Close
-    Set objConn = Nothing
-    np.nagios_exit retVal, retCode
-End Sub
+objRs.Close
+Set objRs = Nothing
+objConn.Close
+Set objConn = Nothing
+
+On Error GoTo 0
+np.nagios_exit "User Connecting DB Count(" & ucdbc & ") | " & "'ucdbc'=" & ucdbc & perfdata, OK
